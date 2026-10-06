@@ -43,7 +43,7 @@ NOTE_RE = re.compile(r"^NOTE-[0-9A-F]{16}$")
 FINDING_RE = re.compile(r"^FIND-[0-9A-F]{16}$")
 
 _META_LIMIT = 1_048_576
-_LAYOUT = ("evidence", "notes", "actions", "findings")
+_LAYOUT = ("evidence", "notes", "actions", "findings", "osint")
 
 
 def _utcnow() -> dt.datetime:
@@ -393,8 +393,30 @@ class CaseStore:
                     "tool": action.get("tool"),
                 }
             )
+        for program in self.list_records(case_id, "osint"):
+            if "program_id" not in program:
+                continue
+            events.append(
+                {
+                    "kind": "osint-program",
+                    "at": program.get("created_at"),
+                    "id": program["program_id"],
+                }
+            )
         events.sort(key=lambda item: (item["at"] or "", item["id"]))
         return events
+
+    def write_record(self, case_id: str, folder: str, name: str, document: dict[str, Any]) -> None:
+        if folder not in _LAYOUT:
+            raise UnsafePathError("refusing record outside the case layout")
+        if not isinstance(name, str) or not name.endswith(".json") or "/" in name or "\\" in name:
+            raise ValueError("invalid record name")
+        self._write_record(case_id, folder, name, document)
+
+    def list_records(self, case_id: str, folder: str) -> list[dict[str, Any]]:
+        if folder not in _LAYOUT:
+            raise UnsafePathError("refusing record outside the case layout")
+        return self._list_named(case_id, folder)
 
     def _write_record(self, case_id: str, folder: str, name: str, document: dict[str, Any]) -> None:
         old = os.umask(0o077)

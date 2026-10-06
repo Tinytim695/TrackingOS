@@ -46,3 +46,12 @@ not a complete operating system and it is not a full sandbox.
   tool, target, and arguments to a broker that loads grants itself.
 - No ISO has been built. Package names in `config/package-tiers.json` are
   unverified candidates.
+
+## Bug-bounty OSINT
+
+`trackingos osint` records a program and checks targets against it before any
+lookup. Out-of-scope domains and CIDRs win over in-scope ones. Wildcards cannot
+be a public suffix (`*.com`, `*.github.io`). A DNS lookup also needs a grant
+with `allow_network`. The OSINT centre does not port-scan, fuzz, or send
+exploit payloads. `allow_active` is stored as false and a document that says
+otherwise is rejected. Addresses returned by DNS are not automatically in scope.

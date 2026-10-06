@@ -9,6 +9,7 @@ store. It does not yet build a bootable image.
 | Claim | State |
 | --- | --- |
 | Secure action gateway and evidence store | Implemented in this tree |
+| Bug-bounty OSINT scope gate and single-name DNS | Implemented in this tree |
 | Host tests | Run `make test` on a Linux machine |
 | GitHub Actions | Workflow is present; a green run is a separate fact |
 | ISO built | No |
@@ -36,6 +37,19 @@ There is no flag that authorises an action. Scope and grant are files.
 ```sh
 PYTHONPATH=src python3 -m trackingos case create \
   --store /srv/cases --title "Lab exercise" --investigator "Sam Jones"
+
+Record a bounty program, then test a name. Nothing is queried until `osint dns`,
+and that still needs a network grant. Active testing is not part of this command.
+
+```sh
+PYTHONPATH=src python3 -m trackingos osint program \
+  --store /srv/cases --case TOS-... \
+  --name "Example" --platform hackerone \
+  --domain '*.example.com' --out-domain admin.example.com
+
+PYTHONPATH=src python3 -m trackingos osint check \
+  --store /srv/cases --case TOS-... --target host:www.example.com
+```
 ```
 
 See [docs/security-model.md](docs/security-model.md) for what the runtime

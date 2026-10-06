@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
+import secrets
 import sys
 
 from trackingos import __version__
@@ -13,6 +15,15 @@ from trackingos.evidence import CASE_RE, CaseStore, StorageError, UnsafePathErro
 from trackingos.executor import execute
 from trackingos.loaders import load_grant, load_scope
 from trackingos.models import ActionRequest, ActionResult
+from trackingos.osint import (
+    decide_target,
+    dns_lookup,
+    load_programs,
+    make_program,
+    save_program,
+    select_program,
+    system_resolver,
+)
 from trackingos.registry import ToolRegistry
 
 
@@ -65,6 +76,38 @@ def main(argv: list[str] | None = None) -> int:
 
     host = sub.add_parser("build-host", help="check image-build prerequisites")
     host.set_defaults(func=_build_host)
+
+    osint = sub.add_parser("osint", help="bug-bounty scope and passive DNS")
+    osint_sub = osint.add_subparsers(dest="osint_command", required=True)
+    program_add = osint_sub.add_parser("program", help="record an authorised bounty program")
+    program_add.add_argument("--store", required=True)
+    program_add.add_argument("--case", required=True)
+    program_add.add_argument("--name", required=True)
+    program_add.add_argument("--platform", required=True)
+    program_add.add_argument("--domain", action="append", default=[])
+    program_add.add_argument("--cidr", action="append", default=[])
+    program_add.add_argument("--out-domain", action="append", default=[])
+    program_add.add_argument("--out-cidr", action="append", default=[])
+    program_add.add_argument("--no-dns", action="store_true")
+    program_add.set_defaults(func=_osint_program)
+    check = osint_sub.add_parser("check", help="test a target against the program, no network")
+    check.add_argument("--store", required=True)
+    check.add_argument("--case", required=True)
+    check.add_argument("--program", default=None)
+    check.add_argument("--target", required=True)
+    check.set_defaults(func=_osint_check)
+    dns = osint_sub.add_parser("dns", help="resolve one in-scope name and store the result")
+    dns.add_argument("--store", required=True)
+    dns.add_argument("--case", required=True)
+    dns.add_argument("--program", default=None)
+    dns.add_argument("--grant", required=True)
+    dns.add_argument("--target", required=True)
+    dns.set_defaults(func=_osint_dns)
+    brief = osint_sub.add_parser("brief", help="show the program boundary")
+    brief.add_argument("--store", required=True)
+    brief.add_argument("--case", required=True)
+    brief.add_argument("--program", default=None)
+    brief.set_defaults(func=_osint_brief)
 
     args = parser.parse_args(argv)
     try:
@@ -144,6 +187,114 @@ def _build_host(_args: argparse.Namespace) -> int:
     report = assess_build_host()
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["iso_build_ready"] else 2
+
+
+def _osint_program(args: argparse.Namespace) -> int:
+    created_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    program = make_program(
+        program_id="PROG-" + secrets.token_hex(8).upper(),
+        case_id=args.case,
+        name=args.name,
+        platform=args.platform,
+        in_scope_domains=args.domain,
+        out_of_scope_domains=args.out_domain,
+        in_scope_cidrs=args.cidr,
+        out_of_scope_cidrs=args.out_cidr,
+        allow_dns=not args.no_dns,
+        created_at=created_at,
+    )
+    with CaseStore(args.store) as store:
+        save_program(store, program)
+    print(program.program_id)
+    print("allow_active: no")
+    print("allow_dns: " + ("yes" if program.allow_dns else "no"))
+    return 0
+
+
+def _osint_check(args: argparse.Namespace) -> int:
+    with CaseStore(args.store) as store:
+        program = select_program(load_programs(store, args.case), args.program)
+    decision = decide_target(program, args.target)
+    print(f"program_id: {program.program_id}")
+    print(f"target: {decision.kind}:{decision.value}")
+    print(f"allowed: {'yes' if decision.allowed else 'no'}")
+    print(f"reason: {decision.reason}")
+    print("active: no")
+    return 0 if decision.allowed else 3
+
+
+def _osint_dns(args: argparse.Namespace) -> int:
+    grant = load_grant(os.path.abspath(args.grant))
+    now = dt.datetime.now(dt.timezone.utc)
+    with CaseStore(args.store) as store:
+        program = select_program(load_programs(store, args.case), args.program)
+        try:
+            result = dns_lookup(program, args.target, grant, now=now, resolver=system_resolver)
+        except OSError as exc:
+            result = {
+                "executed": False,
+                "reason": "dns_failed",
+                "host": args.target,
+                "addresses": [],
+                "outside_cidr": [],
+                "error": exc.strerror or str(exc),
+            }
+        payload = (json.dumps(result, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        host = str(result.get("host") or "lookup")
+        evidence_id = store.add_evidence_bytes(
+            program.case_id,
+            payload,
+            "osint-dns",
+            _dns_filename(host),
+            media_type="application/json",
+        )
+        outside = result.get("outside_cidr") or []
+        detail = (
+            f"host={result.get('host')} executed={result.get('executed')} "
+            f"reason={result.get('reason')} evidence={evidence_id} "
+            f"addresses={','.join(result.get('addresses') or []) or '-'} "
+            f"do_not_scan={','.join(outside) or '-'}"
+        )
+        store.add_finding(
+            program.case_id,
+            "DNS lookup",
+            detail[:100_000],
+            grant.subject,
+        )
+    print(f"program_id: {program.program_id}")
+    print(f"executed: {'yes' if result.get('executed') else 'no'}")
+    print(f"reason: {result.get('reason')}")
+    print(f"evidence_id: {evidence_id}")
+    for address in result.get("addresses") or []:
+        print(f"address: {address}")
+    for address in result.get("outside_cidr") or []:
+        print(f"do_not_scan: {address}")
+    if result.get("error"):
+        print(f"error: {result['error']}")
+    return 0 if result.get("executed") else 3
+
+
+def _osint_brief(args: argparse.Namespace) -> int:
+    with CaseStore(args.store) as store:
+        program = select_program(load_programs(store, args.case), args.program)
+    print(f"program_id: {program.program_id}")
+    print(f"name: {program.name}")
+    print(f"platform: {program.platform}")
+    print("allow_active: no")
+    print("allow_dns: " + ("yes" if program.allow_dns else "no"))
+    print("in_scope_domains: " + (",".join(program.in_scope_domains) or "-"))
+    print("out_of_scope_domains: " + (",".join(program.out_of_scope_domains) or "-"))
+    print("in_scope_cidrs: " + (",".join(program.in_scope_cidrs) or "-"))
+    print("out_of_scope_cidrs: " + (",".join(program.out_of_scope_cidrs) or "-"))
+    print("note: resolved addresses outside these cidrs are not targets")
+    return 0
+
+
+def _dns_filename(host: str) -> str:
+    cleaned = host.replace(":", "_")
+    if not cleaned or len(cleaned) > 200:
+        return "dns.json"
+    return cleaned + ".dns.json"
 
 
 def _record(result: ActionResult) -> dict:
