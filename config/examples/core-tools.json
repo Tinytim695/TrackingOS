@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "allowed_executable_roots": ["/usr/bin", "/usr/sbin"],
+  "tools": [
+    {
+      "name": "sha256sum",
+      "executable": "/usr/bin/sha256sum",
+      "operation": "passive",
+      "network": "none",
+      "path_policy": "absolute-only",
+      "summary": "Hash a file that is already inside the case scope."
+    },
+    {
+      "name": "nmap",
+      "executable": "/usr/bin/nmap",
+      "operation": "active",
+      "network": "required",
+      "path_policy": "none",
+      "summary": "Port scan. Requires an active grant, network authorisation, and an in-scope target."
+    }
+  ]
+}

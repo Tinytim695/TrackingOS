@@ -1,0 +1,16 @@
+[project]
+name = "trackingos"
+version = "0.1.0"
+description = "Authorised tool execution and evidence integrity for TrackingOS"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+trackingos = "trackingos.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
